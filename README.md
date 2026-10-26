@@ -339,6 +339,7 @@ npm run watch:css
 ### Supported platforms
 The Docker image is built for `linux/amd64` and `linux/arm64`, which includes a Raspberry Pi 4 or 5 running a 64-bit OS. 32-bit ARM (`linux/arm/v7`, e.g. 32-bit Raspberry Pi OS) is no longer built: stay on the last image you pulled, or move to a 64-bit OS to keep getting updates.
 
+For a native Raspberry Pi 3 install on 64-bit Debian 11 (no Docker, Python virtualenv), see [PI_Readme.md](PI_Readme.md).
 
 ## License
 
