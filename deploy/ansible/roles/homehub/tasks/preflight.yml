@@ -1,0 +1,31 @@
+---
+- name: Check that the target is Debian-based
+  ansible.builtin.assert:
+    that:
+      - ansible_os_family == 'Debian'
+    fail_msg: >-
+      HomeHub's native deployment supports Debian only.
+      Found {{ ansible_distribution | default('an unknown distribution') }}.
+    quiet: true
+
+- name: Check the Debian release
+  ansible.builtin.assert:
+    that:
+      - ansible_distribution_major_version | int >= 11
+    fail_msg: >-
+      Debian 11 or newer is required.
+      Found {{ ansible_distribution }} {{ ansible_distribution_version }}.
+    quiet: true
+
+- name: Check for a 64-bit architecture
+  ansible.builtin.assert:
+    that:
+      - ansible_architecture in ['x86_64', 'aarch64']
+    fail_msg: >-
+      HomeHub needs a 64-bit OS; found {{ ansible_architecture }}.
+      On a Raspberry Pi, reinstall 64-bit Debian or Raspberry Pi OS.
+    quiet: true
+
+- name: Select the Tailwind binary for this architecture
+  ansible.builtin.set_fact:
+    homehub_tailwind_arch: "{{ 'x64' if ansible_architecture == 'x86_64' else 'arm64' }}"

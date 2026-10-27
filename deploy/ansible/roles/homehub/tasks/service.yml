@@ -1,0 +1,17 @@
+---
+- name: Install the systemd unit
+  ansible.builtin.template:
+    src: homehub.service.j2
+    dest: /etc/systemd/system/homehub.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: homehub_unit
+  notify: Restart HomeHub
+
+- name: Enable and start HomeHub
+  ansible.builtin.systemd:
+    name: homehub
+    enabled: true
+    state: started
+    daemon_reload: "{{ homehub_unit is changed }}"

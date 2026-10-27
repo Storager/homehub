@@ -1,0 +1,28 @@
+---
+- name: Wait for HomeHub on gunicorn
+  ansible.builtin.uri:
+    url: "http://{{ homehub_health_host }}:{{ homehub_port }}/healthz"
+    status_code: 200
+    timeout: 5
+  register: homehub_health_direct
+  until: homehub_health_direct.status == 200
+  retries: 20
+  delay: 2
+  changed_when: false
+  when: homehub_run_healthcheck | bool
+
+- name: Wait for HomeHub through Nginx
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ homehub_nginx_port }}/healthz"
+    headers:
+      Host: "{{ homehub_server_name }}"
+    status_code: 200
+    timeout: 5
+  register: homehub_health_proxy
+  until: homehub_health_proxy.status == 200
+  retries: 20
+  delay: 2
+  changed_when: false
+  when:
+    - homehub_run_healthcheck | bool
+    - homehub_manage_nginx | bool

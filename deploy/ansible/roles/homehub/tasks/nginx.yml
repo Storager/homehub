@@ -1,0 +1,34 @@
+---
+- name: Install the Nginx site
+  ansible.builtin.template:
+    src: homehub.nginx.j2
+    dest: /etc/nginx/sites-available/homehub
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload Nginx
+  when: homehub_manage_nginx | bool
+
+- name: Enable the Nginx site
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/homehub
+    dest: /etc/nginx/sites-enabled/homehub
+    state: link
+  notify: Reload Nginx
+  when: homehub_manage_nginx | bool
+
+- name: Remove the default Nginx site
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: Reload Nginx
+  when:
+    - homehub_manage_nginx | bool
+    - homehub_remove_default_site | bool
+
+- name: Ensure Nginx is enabled and running
+  ansible.builtin.systemd:
+    name: nginx
+    enabled: true
+    state: started
+  when: homehub_manage_nginx | bool

@@ -8,6 +8,10 @@ This guide runs HomeHub directly from a Python **virtualenv** on a 64-bit Debian
 Docker was only used as a local Debian 11 arm64 test bed while writing this guide; the
 verification results are at the bottom.
 
+If you would rather automate steps 2–10, use the Ansible playbook in `deploy/ansible/`.
+It supports both 64-bit `aarch64` and `x86_64` targets; see
+[Deploy with Ansible](#15-deploy-with-ansible).
+
 > **Read this first**
 >
 > - **Debian 11 reached end-of-life on 31 August 2026.** It no longer receives security
@@ -40,42 +44,44 @@ comfortable. A Pi 3 with the Lite (no desktop) image is the best fit.
 
 ---
 
-## 2. Point apt at the Debian archive
+## 2. Point apt at a working Debian mirror
 
-Because Debian 11 is EOL, the normal `deb.debian.org` security repository now contains
-index entries whose package files have been removed, which causes `404 Not Found` errors.
-Switch the Debian repositories to the official archive:
+Because Debian 11 is EOL, `deb.debian.org` and `security.debian.org` no longer serve usable
+Bullseye indexes. The Yandex mirror is usually faster than the official archive, so list it
+first and keep `archive.debian.org` as a fallback. Apt reads the file from the top down:
 
 ```bash
 # Keep a copy of the old list
 sudo cp /etc/apt/sources.list /etc/apt/sources.list.bak
 
-# Rewrite Debian URLs; keep any archive.raspberrypi.org line untouched
-sudo sed -i \
-  -e 's|https\?://deb.debian.org/debian|http://archive.debian.org/debian|g' \
-  -e 's|https\?://security.debian.org/debian-security|http://archive.debian.org/debian-security|g' \
-  /etc/apt/sources.list
+# Replace the Debian entries; keep any archive.raspberrypi.org line
+sudo tee /etc/apt/sources.list >/dev/null <<'EOF'
+deb http://mirror.yandex.ru/debian bullseye main
+deb http://mirror.yandex.ru/debian bullseye-updates main
+deb http://mirror.yandex.ru/debian-security bullseye-security main
 
-# Confirm you now see archive.debian.org
-grep -v '^#' /etc/apt/sources.list
+deb http://archive.debian.org/debian bullseye main
+deb http://archive.debian.org/debian bullseye-updates main
+deb http://archive.debian.org/debian-security bullseye-security main
+EOF
+
+# On Raspberry Pi OS, add your existing line back, for example:
+# grep 'raspberrypi.org' /etc/apt/sources.list.bak | sudo tee -a /etc/apt/sources.list
+
+# Bullseye's Release files are past Valid-Until on every mirror
+echo 'Acquire::Check-Valid-Until "false";' | \
+  sudo tee /etc/apt/apt.conf.d/99homehub-archive
 
 sudo apt-get -o Acquire::Retries=5 update
 ```
 
-If your file has no active Debian lines (only comments), replace it with:
+If your file had no active Debian lines (only comments), the heredoc above is enough; add
+your Raspberry Pi line back afterwards.
 
-```bash
-sudo tee /etc/apt/sources.list >/dev/null <<'EOF'
-deb http://archive.debian.org/debian bullseye main contrib non-free
-deb http://archive.debian.org/debian-security bullseye-security main contrib non-free
-deb http://archive.debian.org/debian bullseye-updates main contrib non-free
-EOF
-```
-
-If you are on Raspberry Pi OS, add your existing `archive.raspberrypi.org` line back into
-the file. The archive is served over HTTP, but apt still verifies the repository
-signatures, so this is safe enough for an EOL system. There will be no new security
-updates for Debian 11.
+The Yandex mirror is a copy of the same Debian archive. Apt still verifies the repository
+signatures, so this does not weaken package verification. There will be no new security
+updates for Debian 11. If `mirror.yandex.ru` is unreachable from your network, delete its
+three lines and run `sudo apt-get update` again to use the archive alone.
 
 ---
 
@@ -268,6 +274,7 @@ User=$(id -un)
 Group=$(id -gn)
 WorkingDirectory=$HOME/homehub
 Environment=PYTHONUNBUFFERED=1
+Environment=PATH=$HOME/homehub/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=$HOME/homehub/.venv/bin/gunicorn wsgi:app -w 1 -k gthread --threads 4 -b 127.0.0.1:5000 --access-logfile - --error-logfile -
 Restart=on-failure
 RestartSec=5
@@ -279,6 +286,13 @@ EOF
 
 If you installed HomeHub somewhere other than `~/homehub`, edit the `WorkingDirectory` and
 `ExecStart` paths before continuing.
+
+The `PATH` line is required for the **Media Downloader**. Gunicorn is started from
+`.venv/bin`, but the downloader runs `yt-dlp` by name, so the executable is looked up on
+`PATH`. systemd services get a default `PATH` that does not include `.venv/bin`; without the
+line above every download fails immediately and the page shows **Not available**. The
+heredoc is unquoted, so `$HOME` is expanded when you run it. If you hand-edit the unit
+instead, replace `$HOME` with your real home directory—systemd does not expand it there.
 
 The bind address is `127.0.0.1` on purpose: gunicorn should not be reachable from other
 machines. Nginx, configured in the next step, will forward requests to it.
@@ -305,6 +319,27 @@ sudo journalctl -u homehub -f
 
 If the service fails, the most common causes are the wrong `WorkingDirectory`, the wrong
 `User`, or a `data/` directory owned by another user—see Troubleshooting.
+
+If you already created the unit from an earlier version of this guide, do not recreate it.
+Add the missing `PATH` with a drop-in instead (replace `<user>`):
+
+```bash
+sudo systemctl edit homehub
+```
+
+In the editor, add:
+
+```ini
+[Service]
+Environment=PATH=/home/<user>/homehub/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+```
+
+Save, then reload and restart:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart homehub
+```
 
 At this point HomeHub answers only on the Pi itself. Continue to the next step to make it
 reachable from other devices through Nginx.
@@ -516,9 +551,11 @@ reinstall 64-bit Debian 11 or Raspberry Pi OS. Thirty-two-bit ARM is not covered
 
 **`404 Not Found` from apt**
 
-Debian 11 is EOL and the normal security pool is gone. Do step 2 and use
-`archive.debian.org`. If apt complains about signatures, temporarily add `[trusted=yes]`
-to the archive lines.
+Debian 11 is EOL and the normal security pool is gone. Do step 2 and keep both the
+`mirror.yandex.ru` and `archive.debian.org` entries. If apt reports `Release file ... is not
+valid yet` or `Valid-Until`, confirm that `/etc/apt/apt.conf.d/99homehub-archive` contains
+`Acquire::Check-Valid-Until "false";`. If one mirror is unreachable, remove its lines and run
+`sudo apt-get update` again.
 
 **`uv: command not found`**
 
@@ -540,6 +577,31 @@ uv pip install -r requirements.txt
 Check `sudo journalctl -u homehub -n 100 --no-pager`. Confirm the paths in the unit and
 that `~/.local/share/uv/python` still exists. Run the same `gunicorn` command by hand from
 the app directory to see the error.
+
+**Media Downloader shows `Not available`**
+
+That chip is the generic failure state; the background worker currently discards yt-dlp's
+error message, so the journal may show nothing useful. Check what the service actually
+sets (replace `<user>`):
+
+```bash
+sudo systemctl cat homehub | grep -i '^Environment='
+sudo -u <user> env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  sh -c 'command -v yt-dlp || echo "yt-dlp not found on the service PATH"'
+```
+
+If it prints `yt-dlp not found`, add the `Environment=PATH=...` line from step 9 (or the
+`systemctl edit` drop-in), then `sudo systemctl daemon-reload && sudo systemctl restart homehub`.
+
+If `yt-dlp` is found, the site or the link is the problem. Run the same URL by hand to see
+the real message:
+
+```bash
+cd "$HOME/homehub"
+.venv/bin/yt-dlp -F "<the-url>"
+```
+
+MP3 extraction and MP4 merging also need `ffmpeg`, which step 3 installs.
 
 **`502 Bad Gateway` from Nginx**
 
@@ -625,15 +687,226 @@ different ARM board may not.
 
 ---
 
+## 15. Deploy with Ansible
+
+The manual steps above are the reference implementation. `deploy/ansible/` contains a
+builtin-only Ansible role that performs steps 2–10 on Debian 11, 12, or 13. It is idempotent
+and architecture-aware: the same playbook works on a 64-bit Raspberry Pi (`aarch64`) and a
+normal 64-bit server (`x86_64`), and it refuses a 32-bit `armv7l` target before making
+changes. It installs HomeHub natively with a virtualenv, gunicorn, and Nginx; Docker is not
+used.
+
+### Requirements
+
+- A 64-bit target: `uname -m` must print `aarch64` or `x86_64`.
+- Debian 11, 12, or 13. Debian 11 gets the EOL apt fix from step 2 automatically.
+- SSH access and an account that can run `sudo`. Add `-K` if sudo prompts for a password.
+- Outbound HTTPS to GitHub, `astral.sh`, and the Tailwind release page.
+- Port 80 free if `homehub_manage_nginx` is true (the default).
+
+The role was tested with `ansible-core` 2.18.1. It uses builtin modules only, so no Galaxy
+collections are required.
+
+### Files
+
+```text
+deploy/ansible/
+├── ansible.cfg
+├── inventory.example.yml
+├── group_vars/all.yml
+├── site.yml
+└── roles/homehub/
+    ├── defaults/main.yml
+    ├── handlers/main.yml
+    ├── tasks/
+    │   ├── main.yml
+    │   ├── preflight.yml
+    │   ├── user.yml
+    │   ├── apt.yml
+    │   ├── app.yml
+    │   ├── build.yml
+    │   ├── service.yml
+    │   ├── nginx.yml
+    │   └── verify.yml
+    └── templates/
+        ├── homehub.service.j2
+        └── homehub.nginx.j2
+```
+
+### Inventory
+
+```yaml
+all:
+  children:
+    homehub:
+      hosts:
+        pi:
+          ansible_host: 192.168.1.50
+          ansible_user: pi
+
+        # test-server:
+        #   ansible_host: 192.168.31.55
+        #   ansible_user: dtsirul
+
+      vars:
+        homehub_user: "{{ ansible_user }}"
+        # Pin a tag for reproducible deploys; a branch follows new commits.
+        homehub_version: main
+        homehub_server_name: "_"
+```
+
+Copy it and edit the hosts:
+
+```bash
+cd deploy/ansible
+cp inventory.example.yml inventory.yml
+$EDITOR inventory.yml
+```
+
+`homehub_user` defaults to the SSH user. The playbook does not create accounts unless
+`homehub_create_user: true`; by default the account must already exist. `homehub_group`
+defaults to `homehub_user`; set it if the account's primary group has a different name.
+
+### Key variables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `homehub_user` | `ansible_user` | account that owns the checkout and runs the service |
+| `homehub_group` | `homehub_user` | group that owns the checkout |
+| `homehub_create_user` | `false` | create `homehub_user` if it is missing |
+| `homehub_home` | `~<user>/homehub` | application directory |
+| `homehub_version` | `main` | git tag, branch, or commit to deploy |
+| `homehub_python_version` | `3.12` | Python version installed by `uv` |
+| `homehub_bind` / `homehub_port` | `127.0.0.1` / `5000` | gunicorn binding |
+| `homehub_server_name` | `_` | Nginx `server_name` |
+| `homehub_nginx_port` | `80` | Nginx listen port |
+| `homehub_manage_nginx` | `true` | write the site, remove the default site, reload Nginx |
+| `homehub_client_max_body_size` | `1024m` | Nginx upload limit; keep it at least `max_upload_mb` |
+| `homehub_fix_debian11_apt` | `true` on Debian 11 | rewrite apt sources to Yandex + archive |
+| `homehub_tailwind_version` | `v3.4.19` | standalone Tailwind version |
+| `homehub_config_force` | `false` | overwrite an existing `config.yml` (back it up first) |
+| `homehub_language` | `ru` | UI language written into `config.yml` when non-empty |
+| `homehub_install_build_tools` | `false` | install compilers and headers for source builds |
+| `homehub_timezone` | empty | set the system timezone when non-empty |
+
+### Run it
+
+On a **brand-new host**, run the playbook directly the first time. `--check` cannot fully
+simulate the first deploy because the skipped `git` clone would create files that later
+tasks read. After the first apply, `--check --diff` is a safe preview.
+
+```bash
+cd deploy/ansible
+
+# Apply (add -K if sudo needs a password)
+ansible-playbook -i inventory.yml site.yml
+
+# Preview later changes
+ansible-playbook -i inventory.yml site.yml --check --diff
+```
+
+Use tags to run one part:
+
+```bash
+ansible-playbook -i inventory.yml site.yml --tags packages   # apt sources + system packages
+ansible-playbook -i inventory.yml site.yml --tags app        # checkout, venv, dependencies, config
+ansible-playbook -i inventory.yml site.yml --tags build      # Tailwind + translations
+ansible-playbook -i inventory.yml site.yml --tags service    # systemd unit
+ansible-playbook -i inventory.yml site.yml --tags nginx      # Nginx site
+ansible-playbook -i inventory.yml site.yml --tags verify     # /healthz checks
+```
+
+`preflight.yml` and `user.yml` are tagged `always`, so validation runs even with a tag.
+
+### What the playbook does
+
+1. Verifies the target is Debian 11 or newer and 64-bit (`aarch64` or `x86_64`).
+2. On Debian 11, rewrites `/etc/apt/sources.list` so every active Debian repository appears
+   first on `mirror.yandex.ru` and then as an `archive.debian.org` duplicate. Comments and
+   third-party repositories such as `archive.raspberrypi.org` are preserved. It also writes
+   `/etc/apt/apt.conf.d/99homehub-archive` with `Acquire::Check-Valid-Until "false";` and
+   refreshes the apt cache.
+3. Installs `ca-certificates`, `curl`, `git`, `tzdata`, `ffmpeg`, `ghostscript`, and
+   `nginx`.
+4. Installs `uv` for the service user, installs Python 3.12, creates `.venv`, and runs
+   `uv pip install -r requirements.txt`. It deliberately uses `install -r`, not `pip sync`,
+   because `requirements.txt` lists direct packages only and `sync` would omit transitive
+   dependencies such as `markupsafe`.
+5. Downloads `tailwindcss-linux-x64` or `tailwindcss-linux-arm64` and rebuilds
+   `static/output.css` only when its inputs change, syncs local `translations/*/LC_MESSAGES/messages.po`
+   catalogs to the target host, and compiles the translation catalogs
+   (`flask translations compile`) whenever `.po` files change or any `.mo` file is missing.
+6. Checks out `homehub_version`, keeps an existing `config.yml` (copying `config-example.yml`
+   when missing), and sets `language` in `config.yml` when `homehub_language` is configured.
+7. Creates and owns `data/`, `uploads/`, `media/`, and `pdfs/`.
+8. Writes the systemd unit with `Environment=HOME=...` and
+   `Environment=PATH=.../.venv/bin:...`, then enables and starts the service.
+9. Writes the Nginx site, removes the default site, validates the configuration, and
+   reloads Nginx.
+10. Waits for `/healthz` on gunicorn and through Nginx.
+
+### Architecture handling
+
+| `ansible_architecture` | Tailwind binary | Result |
+| --- | --- | --- |
+| `x86_64` | `tailwindcss-linux-x64` | supported |
+| `aarch64` | `tailwindcss-linux-arm64` | supported |
+| `armv7l` | — | fails with a 64-bit OS message |
+
+`uv`, Python, pip wheels, and apt packages resolve the target architecture automatically.
+The only architecture-specific download is the standalone Tailwind binary.
+
+### Idempotency and preserved data
+
+- Packages and services use declarative modules; the git checkout is fixed at
+  `homehub_version`.
+- Checksum markers in `~/.local/state/homehub/` prevent unnecessary dependency installs,
+  stylesheet rebuilds, translation recompiles, and Tailwind downloads.
+- Template changes notify `systemd daemon-reload`/restart and `nginx -t`/reload only when a
+  file actually changes.
+- `config.yml`, `data/`, `uploads/`, `media/`, and `pdfs/` are never overwritten.
+- A second run on the Debian 11.11 `x86_64` test server finished with `changed=0` and
+  `failed=0`.
+
+### Updating HomeHub
+
+1. Set `homehub_version` in `inventory.yml` to the tag or commit you want (for example
+   `v0.4.1`), or leave it on `main` to follow the branch.
+2. Run the playbook again. It updates the checkout, reinstalls dependencies only if
+   `requirements.txt` changed, rebuilds CSS/translations only if their inputs changed, and
+   restarts the service once.
+3. Keep the existing `config.yml`, or set `homehub_config_force: true` to replace it. Set
+   `homehub_config_src` to a local file to seed it from your machine.
+
+### Manual steps that remain
+
+- The admin password is interactive only:
+  ```bash
+  sudo -u <user> ~/homehub/.venv/bin/flask set-admin-password
+  ```
+- HTTPS is still out of scope; the generated Nginx site is HTTP only.
+- The playbook does not create backups. Use the commands in step 12 before upgrading.
+
+---
+
 ## Verification performed
 
 The native steps in this guide were verified in October 2026 with a **Debian 11.11 arm64
 container** running under QEMU on an amd64 Docker host. Docker was used only as a test bed;
 it is not part of the runtime. This proves Debian 11 arm64 compatibility, not Pi 3 speed.
 
+The Media Downloader path was additionally verified on a native **Debian 11.11 amd64**
+server, using the exact arguments the app passes to `yt-dlp`. That confirms the download and
+conversion steps, but not Pi 3 speed.
+
+The Ansible playbook was verified on a fresh **Debian 11.11 amd64** server and on an
+existing Debian 11.11 amd64 deployment. The fresh host was provisioned from scratch by the
+playbook; the existing host was updated in place. A second run on the fresh host changed
+nothing.
+
 | Check | Result |
 | --- | --- |
-| Debian 11.11 `aarch64`, apt via `archive.debian.org` | pass |
+| Debian 11.11 `aarch64`, apt via `archive.debian.org` (manual guide) | pass |
 | `uv` 0.13.5 + Python 3.12.15 virtualenv | pass |
 | `uv pip install -r requirements.txt` (SQLAlchemy 2.1.5, Pillow 13.0.0) | pass |
 | Tailwind v3.4.19 `linux-arm64` standalone build | pass, 44 KB `output.css` |
@@ -641,7 +914,17 @@ it is not part of the runtime. This proves Debian 11 arm64 compatibility, not Pi
 | gunicorn 26.2.0, `GET /healthz` | `200 {"ok":true}` |
 | nginx 1.18 reverse proxy, `/healthz`, `/`, and `/static/output.css` via port 80 | `200` |
 | `python run.py` on port 5001 | `200 {"ok":true}` |
+| `yt-dlp` found through systemd's default `PATH` | fail—not found (fixed by the `PATH` line in step 9) |
+| Media Downloader MP4 download + merge, Rutube, venv on `PATH` | pass, ~101 MB |
+| Media Downloader MP3 extraction, Rutube, venv on `PATH` | pass, ~5.8 MB |
 | `flask set-admin-password` and `--clear` | pass |
+| Ansible `--syntax-check` (ansible-core 2.18.1) | pass |
+| Ansible `--check --diff` on Debian 11.11 amd64 | pass |
+| Ansible first apply on a fresh Debian 11.11 amd64 host | 60 ok, 26 changed, 0 failed |
+| Ansible apt-source update (Yandex + archive) on the same host | 50 ok, 2 changed, 0 failed |
+| Ansible second apply after the update (idempotency) | 49 ok, 0 changed, 0 failed |
+| Ansible apt sources: `mirror.yandex.ru` first, `archive.debian.org` fallback | `apt-get update` pass |
+| Ansible deployment, `/healthz` through Nginx | `200 {"ok":true}` |
 | Actual Pi 3 hardware/performance | not tested |
 
 The Nginx configuration was tested with nginx 1.18, the same series Debian 11 packages,

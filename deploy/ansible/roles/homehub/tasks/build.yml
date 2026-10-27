@@ -1,0 +1,201 @@
+---
+- name: Read the installed Tailwind version
+  ansible.builtin.slurp:
+    src: "{{ homehub_state_dir }}/tailwind.version"
+  register: homehub_tailwind_marker
+  failed_when: false
+
+- name: Check the Tailwind binary
+  ansible.builtin.stat:
+    path: "{{ homehub_tailwind_bin }}"
+  register: homehub_tailwind_binary
+
+- name: Decide whether Tailwind needs installing
+  ansible.builtin.set_fact:
+    homehub_tailwind_needs_install: >-
+      {{
+        (not homehub_tailwind_binary.stat.exists)
+        or (homehub_tailwind_marker.content is not defined)
+        or ((homehub_tailwind_marker.content | b64decode | trim) != homehub_tailwind_version)
+      }}
+
+- name: Install the Tailwind standalone binary
+  ansible.builtin.get_url:
+    url: "https://github.com/tailwindlabs/tailwindcss/releases/download/{{ homehub_tailwind_version }}/tailwindcss-linux-{{ homehub_tailwind_arch }}"
+    dest: "{{ homehub_tailwind_bin }}"
+    mode: "0755"
+    force: true
+  environment:
+    HOME: "{{ homehub_user_home }}"
+  become: true
+  become_user: "{{ homehub_user }}"
+  when: homehub_tailwind_needs_install | bool
+
+- name: Record the Tailwind version
+  ansible.builtin.copy:
+    dest: "{{ homehub_state_dir }}/tailwind.version"
+    content: "{{ homehub_tailwind_version }}\n"
+    owner: "{{ homehub_user }}"
+    group: "{{ homehub_group }}"
+    mode: "0644"
+  when: homehub_tailwind_needs_install | bool
+
+- name: Compute the stylesheet input checksum
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      find static/input.css tailwind.config.js templates static/js -type f -print0 \
+        | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1
+    chdir: "{{ homehub_home }}"
+    executable: /bin/bash
+  register: homehub_css_input
+  changed_when: false
+  check_mode: false
+  become: true
+  become_user: "{{ homehub_user }}"
+
+- name: Check the compiled stylesheet
+  ansible.builtin.stat:
+    path: "{{ homehub_home }}/static/output.css"
+  register: homehub_css_output
+
+- name: Read the stylesheet marker
+  ansible.builtin.slurp:
+    src: "{{ homehub_state_dir }}/css.sha256"
+  register: homehub_css_marker
+  failed_when: false
+
+- name: Decide whether the stylesheet needs building
+  ansible.builtin.set_fact:
+    homehub_css_needs_build: >-
+      {{
+        (not homehub_css_output.stat.exists)
+        or (homehub_css_marker.content is not defined)
+        or ((homehub_css_marker.content | b64decode | trim) != (homehub_css_input.stdout | trim))
+      }}
+
+- name: Build the stylesheet
+  ansible.builtin.command:
+    cmd: "{{ homehub_tailwind_bin }} -i ./static/input.css -o ./static/output.css --minify"
+    chdir: "{{ homehub_home }}"
+  environment:
+    HOME: "{{ homehub_user_home }}"
+  become: true
+  become_user: "{{ homehub_user }}"
+  when: homehub_css_needs_build | bool
+
+- name: Record the stylesheet checksum
+  ansible.builtin.copy:
+    dest: "{{ homehub_state_dir }}/css.sha256"
+    content: "{{ homehub_css_input.stdout | trim }}\n"
+    owner: "{{ homehub_user }}"
+    group: "{{ homehub_group }}"
+    mode: "0644"
+  when: homehub_css_needs_build | bool
+
+- name: Find local translation catalogs
+  ansible.builtin.find:
+    paths: "{{ playbook_dir }}/../../translations"
+    patterns: "messages.po"
+    recurse: true
+  delegate_to: localhost
+  become: false
+  run_once: true
+  check_mode: false
+  register: homehub_local_translations
+
+- name: Ensure translation catalog directories exist
+  ansible.builtin.file:
+    path: "{{ homehub_home }}/translations/{{ item.path | dirname | dirname | basename }}/LC_MESSAGES"
+    state: directory
+    owner: "{{ homehub_user }}"
+    group: "{{ homehub_group }}"
+    mode: "0755"
+  loop: "{{ homehub_local_translations.files }}"
+  loop_control:
+    label: "{{ item.path | dirname | dirname | basename }}"
+
+- name: Sync local translation catalogs
+  ansible.builtin.copy:
+    src: "{{ item.path }}"
+    dest: "{{ homehub_home }}/translations/{{ item.path | dirname | dirname | basename }}/LC_MESSAGES/messages.po"
+    owner: "{{ homehub_user }}"
+    group: "{{ homehub_group }}"
+    mode: "0644"
+  loop: "{{ homehub_local_translations.files }}"
+  loop_control:
+    label: "{{ item.path | dirname | dirname | basename }}"
+
+- name: Compute the translation input checksum
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      find translations -name '*.po' -type f -print0 \
+        | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1
+    chdir: "{{ homehub_home }}"
+    executable: /bin/bash
+  register: homehub_translations_input
+  changed_when: false
+  check_mode: false
+  become: true
+  become_user: "{{ homehub_user }}"
+
+- name: Count translation catalogs
+  ansible.builtin.shell:
+    cmd: "find translations -name '*.po' -type f | wc -l"
+    chdir: "{{ homehub_home }}"
+    executable: /bin/bash
+  register: homehub_translations_total
+  changed_when: false
+  check_mode: false
+  become: true
+  become_user: "{{ homehub_user }}"
+
+- name: Count compiled translations
+  ansible.builtin.shell:
+    cmd: "find translations -name '*.mo' -type f | wc -l"
+    chdir: "{{ homehub_home }}"
+    executable: /bin/bash
+  register: homehub_translations_compiled
+  changed_when: false
+  check_mode: false
+  become: true
+  become_user: "{{ homehub_user }}"
+
+- name: Read the translations marker
+  ansible.builtin.slurp:
+    src: "{{ homehub_state_dir }}/translations.sha256"
+  register: homehub_translations_marker
+  failed_when: false
+
+- name: Decide whether translations need compiling
+  ansible.builtin.set_fact:
+    homehub_translations_need_compile: >-
+      {{
+        (homehub_translations_compiled.stdout | trim | int) < (homehub_translations_total.stdout | trim | int)
+        or (homehub_translations_marker.content is not defined)
+        or ((homehub_translations_marker.content | b64decode | trim) != (homehub_translations_input.stdout | trim))
+      }}
+
+- name: Compile translations
+  ansible.builtin.command:
+    cmd: "{{ homehub_home }}/.venv/bin/flask translations compile"
+    chdir: "{{ homehub_home }}"
+  environment:
+    HOME: "{{ homehub_user_home }}"
+    FLASK_APP: wsgi.py
+    VIRTUAL_ENV: "{{ homehub_home }}/.venv"
+    PATH: "{{ homehub_home }}/.venv/bin:{{ homehub_user_home }}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  become: true
+  become_user: "{{ homehub_user }}"
+  when: homehub_translations_need_compile | bool
+  notify: Restart HomeHub
+
+- name: Record the translations checksum
+  ansible.builtin.copy:
+    dest: "{{ homehub_state_dir }}/translations.sha256"
+    content: "{{ homehub_translations_input.stdout | trim }}\n"
+    owner: "{{ homehub_user }}"
+    group: "{{ homehub_group }}"
+    mode: "0644"
+  when: homehub_translations_need_compile | bool

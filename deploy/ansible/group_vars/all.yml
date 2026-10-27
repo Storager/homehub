@@ -1,0 +1,9 @@
+---
+# Shared overrides belong here. Values in inventory.yml or host_vars/ win.
+#
+# homehub_version: "v0.4.1"
+# homehub_python_version: "3.12"
+# homehub_bind: "127.0.0.1"
+# homehub_port: 5000
+# homehub_manage_nginx: true
+# homehub_client_max_body_size: "1024m"

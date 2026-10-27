@@ -102,6 +102,18 @@ def test_hindi_catalog_is_complete():
     assert [str(e) for m in catalog if m.id for e in m.check(catalog)] == []
 
 
+def test_russian_catalog_is_complete():
+    po_path = os.path.join(i18n.TRANSLATIONS_DIR, 'ru', 'LC_MESSAGES', 'messages.po')
+    with open(po_path, 'rb') as f:
+        catalog = read_po(f, locale='ru')
+    untranslated = [
+        m.id for m in catalog
+        if m.id and (not m.string or m.fuzzy or (isinstance(m.string, tuple) and not all(m.string)))
+    ]
+    assert untranslated == []
+    assert [str(e) for m in catalog if m.id for e in m.check(catalog)] == []
+
+
 def test_home_page_sentence_with_instance_name(tmp_path, monkeypatch):
     hindi = make_client(tmp_path, monkeypatch, 'hi', password='').get('/').get_data(as_text=True)
     assert 'Test Hub में आपका स्वागत है</h1>' in hindi
@@ -130,7 +142,11 @@ def test_page_script_strings_are_found_inside_template_literals():
 def test_counts_use_singular_and_plural(tmp_path, monkeypatch):
     from datetime import date, timedelta
     from app.models import ExpiryItem
-    for language, one, many in (('en', '1 day left', '5 days left'), ('hi', '1 दिन बाकी', '5 दिन बाकी')):
+    for language, one, many in (
+        ('en', '1 day left', '5 days left'),
+        ('hi', '1 दिन बाकी', '5 दिन बाकी'),
+        ('ru', 'Остался 1 день', 'Осталось 5 дней'),
+    ):
         client = make_client(tmp_path, monkeypatch, language, password='')
         with client.application.app_context():
             db.session.add(ExpiryItem(name='Milk', expiry_date=date.today() + timedelta(days=1), creator='Mom'))

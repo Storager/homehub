@@ -1,0 +1,20 @@
+server {
+    listen {{ homehub_nginx_port }} default_server;
+    listen [::]:{{ homehub_nginx_port }} default_server;
+    server_name {{ homehub_server_name }};
+
+    # Keep this at least as large as max_upload_mb in config.yml.
+    client_max_body_size {{ homehub_client_max_body_size }};
+
+    location / {
+        proxy_pass http://{{ homehub_proxy_host }}:{{ homehub_port }};
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+}

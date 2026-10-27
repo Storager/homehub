@@ -1,0 +1,27 @@
+---
+- import_tasks: preflight.yml
+  tags: always
+
+- import_tasks: user.yml
+  tags: always
+
+- import_tasks: apt.yml
+  tags: packages
+
+- import_tasks: app.yml
+  tags: app
+
+- import_tasks: build.yml
+  tags: build
+
+- import_tasks: service.yml
+  tags: service
+
+- import_tasks: nginx.yml
+  tags: nginx
+
+- name: Apply pending service and Nginx changes
+  ansible.builtin.meta: flush_handlers
+
+- import_tasks: verify.yml
+  tags: verify

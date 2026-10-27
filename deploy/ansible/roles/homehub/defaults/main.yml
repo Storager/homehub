@@ -1,0 +1,64 @@
+---
+# Account that owns the checkout and runs the service.
+homehub_user: "{{ ansible_user | default('homehub') }}"
+homehub_group: "{{ homehub_user }}"
+homehub_create_user: false
+# Leave empty to read the account's real home directory from passwd.
+homehub_user_home: ""
+homehub_home: "{{ homehub_user_home }}/homehub"
+
+# Source to deploy.
+homehub_repo: "https://github.com/surajverma/homehub.git"
+homehub_version: "main"
+
+# Runtime.
+homehub_python_version: "3.12"
+homehub_bind: "127.0.0.1"
+homehub_port: 5000
+homehub_run_healthcheck: true
+homehub_timezone: ""
+
+# Extra paths derived from the account home.
+homehub_uv: "{{ homehub_user_home }}/.local/bin/uv"
+homehub_tailwind_bin: "{{ homehub_user_home }}/.local/bin/tailwindcss"
+homehub_state_dir: "{{ homehub_user_home }}/.local/state/homehub"
+homehub_proxy_host: "{{ '127.0.0.1' if homehub_bind in ['0.0.0.0', '::'] else homehub_bind }}"
+homehub_health_host: "{{ homehub_proxy_host }}"
+
+# Internal: a real newline for text files assembled with Jinja.
+homehub_newline: "\n"
+
+# System packages.
+homehub_fix_debian11_apt: "{{ ansible_distribution_major_version | int == 11 }}"
+homehub_install_build_tools: false
+homehub_packages:
+  - ca-certificates
+  - curl
+  - git
+  - tzdata
+  - ffmpeg
+  - ghostscript
+  - nginx
+homehub_build_packages:
+  - build-essential
+  - python3-dev
+  - libjpeg-dev
+  - zlib1g-dev
+
+# Front-end build.
+homehub_tailwind_version: "v3.4.19"
+
+# config.yml is copied from config-example.yml only when it does not exist.
+# Set homehub_config_src to a local file to seed it, and homehub_config_force
+# to overwrite an existing file on every run.
+homehub_config_src: ""
+homehub_config_force: false
+# UI language written into config.yml when non-empty (for example "ru").
+homehub_language: "ru"
+
+# Nginx.
+homehub_manage_nginx: true
+homehub_server_name: "_"
+homehub_nginx_port: 80
+homehub_client_max_body_size: "1024m"
+homehub_remove_default_site: true

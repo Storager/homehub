@@ -1,0 +1,8 @@
+---
+- name: Deploy HomeHub natively
+  hosts: homehub
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: homehub

@@ -1,0 +1,118 @@
+---
+- name: Read the Debian apt sources list
+  ansible.builtin.slurp:
+    src: /etc/apt/sources.list
+  register: homehub_apt_sources_raw
+  check_mode: false
+  when:
+    - homehub_fix_debian11_apt | bool
+    - ansible_distribution_major_version | int == 11
+
+# Bullseye is EOL, so the official hosts are dead or slow. Write a Yandex
+# mirror entry for every active Debian repository line, then the same entries
+# on archive.debian.org as a fallback. Comments and third-party repositories
+# (for example archive.raspberrypi.org) are left alone. Normalising every
+# known host to archive.debian.org first makes the rewrite idempotent.
+- name: Build the Debian 11 apt sources list
+  ansible.builtin.set_fact:
+    homehub_apt_sources_content: |
+      {%- set ns = namespace(seen=[], yandex=[], archive=[], other=[]) -%}
+      {%- for raw in (homehub_apt_sources_raw.content | b64decode).splitlines() -%}
+      {%- set line = raw | trim -%}
+      {%- if line | length == 0 -%}
+      {%- elif (line.startswith('deb ') or line.startswith('deb-src ')) and ('archive.debian.org' in line or 'mirror.yandex.ru' in line or 'deb.debian.org' in line or 'security.debian.org' in line) -%}
+      {%- set line = line
+            | replace('https://deb.debian.org/debian', 'http://archive.debian.org/debian')
+            | replace('http://deb.debian.org/debian', 'http://archive.debian.org/debian')
+            | replace('https://security.debian.org/debian-security', 'http://archive.debian.org/debian-security')
+            | replace('http://security.debian.org/debian-security', 'http://archive.debian.org/debian-security')
+            | replace('https://mirror.yandex.ru/debian', 'http://archive.debian.org/debian')
+            | replace('http://mirror.yandex.ru/debian', 'http://archive.debian.org/debian') -%}
+      {%- if line not in ns.seen -%}
+      {%- set ns.seen = ns.seen + [line] -%}
+      {%- set ns.archive = ns.archive + [line] -%}
+      {%- set ns.yandex = ns.yandex + [line | replace('http://archive.debian.org/', 'http://mirror.yandex.ru/')] -%}
+      {%- endif -%}
+      {%- else -%}
+      {%- set ns.other = ns.other + [raw] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- if ns.archive | length == 0 -%}
+      {%- set ns.archive = [
+            'deb http://archive.debian.org/debian bullseye main',
+            'deb http://archive.debian.org/debian bullseye-updates main',
+            'deb http://archive.debian.org/debian-security bullseye-security main',
+          ] -%}
+      {%- set ns.yandex = [
+            'deb http://mirror.yandex.ru/debian bullseye main',
+            'deb http://mirror.yandex.ru/debian bullseye-updates main',
+            'deb http://mirror.yandex.ru/debian-security bullseye-security main',
+          ] -%}
+      {%- endif -%}
+      {{ (ns.yandex + ns.archive + ns.other) | join(homehub_newline) }}
+  when:
+    - homehub_fix_debian11_apt | bool
+    - ansible_distribution_major_version | int == 11
+
+- name: Write the Debian 11 apt sources list
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list
+    content: "{{ homehub_apt_sources_content }}"
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+  register: homehub_apt_sources
+  when:
+    - homehub_fix_debian11_apt | bool
+    - ansible_distribution_major_version | int == 11
+
+- name: Accept expired Release files from the Debian archive
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/99homehub-archive
+    content: |
+      // Debian 11 is EOL. archive.debian.org still signs the metadata,
+      // but its Valid-Until date is in the past.
+      Acquire::Check-Valid-Until "false";
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - homehub_fix_debian11_apt | bool
+    - ansible_distribution_major_version | int == 11
+  register: homehub_apt_conf
+
+- name: Refresh the apt cache after changing repositories
+  ansible.builtin.command:
+    cmd: apt-get update
+  when: >-
+    (homehub_fix_debian11_apt | bool)
+    and ((homehub_apt_sources is changed) or (homehub_apt_conf is changed))
+  changed_when: true
+  retries: 3
+  delay: 5
+
+- name: Install system packages
+  ansible.builtin.apt:
+    name: "{{ homehub_packages + (homehub_build_packages if homehub_install_build_tools | bool else []) }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    force_apt_get: true
+  retries: 3
+  delay: 5
+
+- name: Read the current timezone
+  ansible.builtin.command:
+    cmd: timedatectl show -p Timezone --value
+  register: homehub_current_timezone
+  changed_when: false
+  check_mode: false
+  when: homehub_timezone | length > 0
+
+- name: Set the timezone
+  ansible.builtin.command:
+    cmd: "timedatectl set-timezone {{ homehub_timezone }}"
+  when:
+    - homehub_timezone | length > 0
+    - homehub_current_timezone.stdout | trim != homehub_timezone

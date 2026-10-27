@@ -1,0 +1,169 @@
+---
+- name: Check whether the application directory already exists
+  ansible.builtin.stat:
+    path: "{{ homehub_home }}"
+  register: homehub_app_dir
+
+- name: Check whether the application directory is a git checkout
+  ansible.builtin.stat:
+    path: "{{ homehub_home }}/.git"
+  register: homehub_git_dir
+
+- name: Refuse to overwrite an unrelated application directory
+  ansible.builtin.assert:
+    that:
+      - not homehub_app_dir.stat.exists or homehub_git_dir.stat.exists
+    fail_msg: >-
+      {{ homehub_home }} exists but is not a git checkout.
+      Move it out of the way or set homehub_home to another path.
+    quiet: true
+
+- name: Check out HomeHub
+  ansible.builtin.git:
+    repo: "{{ homehub_repo }}"
+    dest: "{{ homehub_home }}"
+    version: "{{ homehub_version }}"
+    update: true
+  become: true
+  become_user: "{{ homehub_user }}"
+  environment:
+    HOME: "{{ homehub_user_home }}"
+  register: homehub_checkout
+  notify: Restart HomeHub
+
+- name: Ensure user-local directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ homehub_user }}"
+    group: "{{ homehub_group }}"
+    mode: "0755"
+  loop:
+    - "{{ homehub_user_home }}/.local/bin"
+    - "{{ homehub_state_dir }}"
+  become: true
+  become_user: "{{ homehub_user }}"
+
+- name: Install uv for the service user
+  ansible.builtin.shell:
+    cmd: curl -LsSf https://astral.sh/uv/install.sh | sh
+    creates: "{{ homehub_uv }}"
+  args:
+    executable: /bin/bash
+  environment:
+    HOME: "{{ homehub_user_home }}"
+    PATH: "{{ homehub_user_home }}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  become: true
+  become_user: "{{ homehub_user }}"
+
+- name: Install Python with uv
+  ansible.builtin.command:
+    cmd: "{{ homehub_uv }} python install {{ homehub_python_version }}"
+  environment:
+    HOME: "{{ homehub_user_home }}"
+    PATH: "{{ homehub_user_home }}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  become: true
+  become_user: "{{ homehub_user }}"
+  changed_when: false
+
+- name: Create the virtualenv
+  ansible.builtin.command:
+    cmd: "{{ homehub_uv }} venv --python {{ homehub_python_version }} .venv"
+    chdir: "{{ homehub_home }}"
+    creates: "{{ homehub_home }}/.venv/pyvenv.cfg"
+  environment:
+    HOME: "{{ homehub_user_home }}"
+    PATH: "{{ homehub_user_home }}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  become: true
+  become_user: "{{ homehub_user }}"
+  register: homehub_venv
+
+- name: Read the requirements checksum
+  ansible.builtin.stat:
+    path: "{{ homehub_home }}/requirements.txt"
+    checksum_algorithm: sha256
+  register: homehub_requirements
+
+- name: Read the installed requirements marker
+  ansible.builtin.slurp:
+    src: "{{ homehub_state_dir }}/requirements-install.sha256"
+  register: homehub_requirements_marker
+  failed_when: false
+
+# `uv pip sync` treats requirements.txt as a complete lockfile and does not add
+# transitive dependencies. HomeHub's file lists only direct packages, so use
+# `uv pip install -r` here.
+- name: Install Python dependencies
+  ansible.builtin.command:
+    cmd: >-
+      {{ homehub_uv }} pip install
+      --python {{ homehub_home }}/.venv/bin/python
+      -r {{ homehub_home }}/requirements.txt
+    chdir: "{{ homehub_home }}"
+  environment:
+    HOME: "{{ homehub_user_home }}"
+    PATH: "{{ homehub_home }}/.venv/bin:{{ homehub_user_home }}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  become: true
+  become_user: "{{ homehub_user }}"
+  when: >-
+    homehub_requirements_marker.content is not defined
+    or (homehub_requirements_marker.content | b64decode | trim) != homehub_requirements.stat.checksum
+    or homehub_venv is changed
+  notify: Restart HomeHub
+
+- name: Record the requirements checksum
+  ansible.builtin.copy:
+    dest: "{{ homehub_state_dir }}/requirements-install.sha256"
+    content: "{{ homehub_requirements.stat.checksum }}\n"
+    owner: "{{ homehub_user }}"
+    group: "{{ homehub_group }}"
+    mode: "0644"
+  when: >-
+    homehub_requirements_marker.content is not defined
+    or (homehub_requirements_marker.content | b64decode | trim) != homehub_requirements.stat.checksum
+    or homehub_venv is changed
+
+- name: Ensure application directories exist
+  ansible.builtin.file:
+    path: "{{ homehub_home }}/{{ item }}"
+    state: directory
+    owner: "{{ homehub_user }}"
+    group: "{{ homehub_group }}"
+    mode: "0755"
+  loop:
+    - data
+    - uploads
+    - media
+    - pdfs
+
+- name: Create config.yml
+  ansible.builtin.copy:
+    src: "{{ homehub_config_src if homehub_config_src | length > 0 else homehub_home ~ '/config-example.yml' }}"
+    dest: "{{ homehub_home }}/config.yml"
+    remote_src: "{{ homehub_config_src | length == 0 }}"
+    force: "{{ homehub_config_force | bool }}"
+    owner: "{{ homehub_user }}"
+    group: "{{ homehub_group }}"
+    mode: "0640"
+
+- name: Check config.yml
+  ansible.builtin.stat:
+    path: "{{ homehub_home }}/config.yml"
+  register: homehub_config
+
+- name: Require config.yml
+  ansible.builtin.assert:
+    that:
+      - homehub_config.stat.exists
+    fail_msg: "config.yml was not created; check the checkout and homehub_config_src."
+    quiet: true
+
+- name: Set UI language in config.yml
+  ansible.builtin.lineinfile:
+    path: "{{ homehub_home }}/config.yml"
+    regexp: '^language:\s*'
+    line: "language: {{ homehub_language }}"
+    owner: "{{ homehub_user }}"
+    group: "{{ homehub_group }}"
+    mode: "0640"
+  when: homehub_language | default('') | length > 0

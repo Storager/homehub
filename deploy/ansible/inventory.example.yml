@@ -1,0 +1,32 @@
+---
+# Copy this file to inventory.yml and edit the hosts.
+#
+#   cd deploy/ansible
+#   cp inventory.example.yml inventory.yml
+#   ansible-playbook -i inventory.yml site.yml --check --diff
+#   ansible-playbook -i inventory.yml site.yml
+#
+# `homehub_user` defaults to the SSH user. Set it explicitly if the service
+# should run as somebody else; the account must already exist unless
+# `homehub_create_user` is true.
+
+all:
+  children:
+    homehub:
+      hosts:
+        pi:
+          ansible_host: 192.168.1.50
+          ansible_user: pi
+
+        # test-server:
+        #   ansible_host: 192.168.31.55
+        #   ansible_user: mamba
+
+      vars:
+        homehub_user: "{{ ansible_user }}"
+        # Pin a tag for reproducible deploys; a branch follows new commits.
+        homehub_version: main
+        homehub_server_name: "_"
+        # homehub_language: ru
+        # homehub_timezone: Europe/Berlin
+        # homehub_client_max_body_size: 1024m
